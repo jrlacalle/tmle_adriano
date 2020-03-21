@@ -1,0 +1,174 @@
+---
+title: "TMLE for binary data"
+output: html_notebook
+---
+
+Reproduzco las rutinas del artículo de Statistics in Medicine
+
+```{r define datos}
+# Function to generate data
+generateData <- function(n) {  
+w1 <- rbinom(n, size = 1, prob = 0.5)
+w2 <- rbinom(n, size = 1, prob = 0.65)
+w3 <- round(runif(n, min = 0, max = 4), digits = 0)
+w4 <- round(runif(n, min = 0, max = 5), digits = 0)
+A <- rbinom(n, size = 1, prob = plogis(-5 + 0.05*w2 + 0.25*w3 + 0.6*w4 + 0.4*w2*w4))
+
+# counterfactual
+Y.1 <- rbinom(n, size = 1, prob = plogis(-1 + 1 - 0.1*w1 + 0.35*w2 + 0.25*w3 + 0.20*w4 + 0.15*w2*w4))
+Y.0 <- rbinom(n, size = 1, prob = plogis(-1 + 0 - 0.1*w1 + 0.35*w2 + 0.25*w3 + 0.20*w4 + 0.15*w2*w4))
+
+# observed outcome
+Y <- Y.1*A + Y.0*(1 - A)
+
+#return data.frame
+data.frame(w1, w2, w3, w4, A, Y, Y.1, Y.0)
+
+}
+```
+
+Y ahora se aplica para estimar los efectos
+```{r}
+# True ATE and OR
+set.seed(7777)
+ObsData <- generateData(n = 5000000)
+True_EY.1 <- mean(ObsData$Y.1)
+True_EY.0 <- mean(ObsData$Y.0)
+True_ATE <- True_EY.1 - True_EY.0; True_ATE
+True_MOR <- (True_EY.1*(1 - True_EY.0))/((1 - True_EY.1)*True_EY.0); True_MOR
+
+#True_ATE:  19.3%
+
+#True_MOR: 2.5
+
+# Data for simulation
+set.seed(7722)
+ObsData <- generateData(n = 10000)
+```
+
+# Predicción de Q(A,W)
+```{r}
+#First estimation of E(Y|A, W), namely 
+m <- glm(Y ~ A + w1 + w2 + w3 + w4, family = binomial, data = ObsData) #Misspecified model
+
+#Prediction for A, A = 1 and, A = 0
+QAW = predict(m, type = "response")
+Q1W = predict(m, newdata = data.frame(A = 1, ObsData[,c("w1","w2","w3","w4")]), type = "response")
+Q0W = predict(m, newdata = data.frame(A = 0, ObsData[,c("w1","w2","w3","w4")]), type = "response")
+
+#Estimated mortality risk difference (G‐computation)
+mean(Q1W - Q0W)
+
+#Initial ATE estimate: 20.4%
+#Estimated MOR (G-computation)
+mean(Q1W)*(1 - mean(Q0W)) / ((1 - mean(Q1W))*mean(Q0W))
+
+#Initial MOR estimate: 2.7
+```
+#Predicción del propensity score
+```{r}
+psm <- glm(A ~ w1 + w2 + w3 + w4, family = binomial, data = ObsData) 
+#Misspecified model
+gW = predict(psm, type = "response") #propensity score values
+
+#Propensity score distribution
+summary(gW)
+```
+# Estimación de las covariables inteligentes
+```{r}
+#Clever covariate and fluctuating/substitution parameters
+H1W = (ObsData$A / gW)
+H0W = (1 - ObsData$A) / (1 - gW)
+epsilon <- coef(glm(ObsData$Y ~ -1 + H0W + H1W + offset(qlogis(QAW)), family = binomial)); epsilon
+
+#epsilon: 0.003, 0.003
+```
+
+# Actualización del ATE y ATMOR a partir de Q0 y Q1
+```{r}
+Q0W_1 <- plogis(qlogis(Q0W) + epsilon[1] / (1 - gW))
+Q1W_1 <- plogis(qlogis(Q1W) + epsilon[2] / gW)
+
+ATEtmle1 <- mean(Q1W_1 - Q0W_1); ATEtmle1
+EY1tmle1 <- mean(Q1W_1)
+EY0tmle1 <- mean(Q0W_1)
+
+MORtmle1 <- (EY1tmle1 * (1 - EY0tmle1)) / ((1 - EY1tmle1) * EY0tmle1); MORtmle1
+
+#ATEtmle1: 22.1%
+
+#Marginal Odds Ratio (MORtmle1): 3.0
+```
+
+#Estimación del error estándar y del IC
+```{r}
+#ATE efficient influence curve (EIC)
+D1 <- ObsData$A/gW*(ObsData$Y - Q1W_1) + Q1W_1 - EY1tmle1
+D0 <- (1 - ObsData$A)/(1 - gW)*(ObsData$Y - Q0W_1) + Q0W_1 - EY0tmle1
+EIC <- D1 - D0
+
+#ATE variance
+n <- nrow(ObsData)
+varHat.IC <- var(EIC)/n
+
+#ATE 95%CI
+ATEtmle1_CI <- c(ATEtmle1 - 1.96*sqrt(varHat.IC), ATEtmle1 + 1.96*sqrt(varHat.IC)); ATEtmle1; ATEtmle1_CI
+
+#ATEtmle1_CI(95%CI): 22.1% (15.1, 29.0)
+
+#MOR EIC
+EIC <- (1 - EY0tmle1) / EY0tmle1 / (1 - EY1tmle1)^2 * D1 - EY1tmle1 / (1 - EY1tmle1) / EY0tmle1^2 * D0
+varHat.IC <- var(EIC)/n
+
+#MOR 95%CI
+MORtmle1_CI <- c(MORtmle1 - 1.96*sqrt(varHat.IC), MORtmle1 + 1.96*sqrt(varHat.IC)); MORtmle1; MORtmle1_CI
+
+#MORtmle1_CI(95%CI): 3.0 (1.6, 4.3)
+```
+
+#Estimación con el AIPTW
+```{r}
+EY1aiptw <- mean((ObsData$A) * (ObsData$Y - Q1W) / gW + Q1W)
+EY0aiptw <- mean((1 - ObsData$A) * (ObsData$Y - Q0W) / (1 - gW) + Q0W)
+AIPTW_ATE <- EY1aiptw - EY0aiptw
+AIPTW_ATE
+AIPTW_MOR <- (EY1aiptw * (1 - EY0aiptw)) / ((1 - EY1aiptw) * EY0aiptw)
+AIPTW_MOR
+
+#Calculation of the efficient IC
+D1 <- (ObsData$A) * (ObsData$Y - Q1W) / gW + Q1W - EY1aiptw
+D0 <- (1 - ObsData$A) * (ObsData$Y - Q0W) / (1 - gW) + Q0W - EY0aiptw
+varHat_AIPTW <- var(D1 - D0) / n
+ATEaiptw_CI <- c(AIPTW_ATE - 1.96*sqrt(varHat_AIPTW), AIPTW_ATE + 1.96*sqrt(varHat_AIPTW))
+AIPTW_ATE
+ATEaiptw_CI
+#ATEaiptw_CI(95%CI): 24.0% (16.4, 31.6)
+
+ICmor_aiptw <- (1 - EY0aiptw) / EY0aiptw / (1 - EY1aiptw)^2 * D1 - EY1aiptw / (1 - EY1aiptw) / EY0aiptw^2 * D0
+varHat_AIPTW2 <- var(ICmor_aiptw) / n
+MORaiptw_CI <- c(AIPTW_MOR - 1.96*sqrt(varHat_AIPTW2), AIPTW_MOR + 1.96*sqrt(varHat_AIPTW2))
+AIPTW_MOR
+MORaiptw_CI
+#MORaiptw_CI(95%CI): 3.4 (1.6, 5.2)
+```
+
+#TMLE con la libreria Superlearner por defecto
+```{r}
+library(tmle)
+library(SuperLearner)
+
+TMLE2 <- tmle(Y = ObsData$Y, A = ObsData$A, W = ObsData[,c("w1", "w2", "w3", "w4")], family = "binomial")
+
+ATEtmle2 <- TMLE2$estimates$ATE$psi;ATEtmle2
+
+TMLE2$estimates$ATE$CI
+
+MORtmle2 <- TMLE2$estimates$OR$psi;MORtmle2
+
+TMLE2$estimates$OR$CI
+
+#ATEtmle2 (95%CI): 20.8% (17.5, 24.1)
+
+#MORtmle2 (95%CI): 2.8 (2.3, 3.4)
+```
+

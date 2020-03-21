@@ -1,0 +1,103 @@
+---
+title: "Preparación de datos"
+output: html_notebook
+---
+
+```{r}
+library(readxl)
+library(dplyr)
+library(tidyverse)
+```
+```{r}
+bajas <- read_excel("../datos/Base_TMLE_transposta.xlsx", 
+col_types = c("text", "numeric", "numeric", "skip", "numeric", "numeric", "numeric", "text", "numeric", "numeric", "numeric", "text", "numeric", "numeric", "numeric"))
+```
+
+Definimos una nueva variable, para incluir al personal sanitario (código=1), frente al resto(código=0).
+```{r dummy}
+bajas$cargo_1<-numeric(nrow(bajas))
+bajas$cargo_1<-if(bajas$CARGO_ESTRAT=="SUPERIOR SAUDE"|bajas$CARGO_ESTRAT=="9o0o0") 1 else 0
+bajas$cargo_1<-if(bajas$CARGO_ESTRAT %in% c("SUPERIOR SAUDE","MEDIO SAUDE")) 1 else 0
+```
+
+La variable "unidade" la recodificamos en 4 dummy:
+- AG: Admon Gral
+
+```{r}
+bajas$UNIDADE_dummy <- factor(bajas$UNIDADE)
+
+```
+
+
+Ahora creo una variable que, comparando el código CIE de la baja, indica si ha cambiado con respecto a la visita anterior.
+
+```{r}
+bajas_2 <- bajas %>% 
+  group_by(Num_Unico) %>% 
+  mutate(cambio = CIE - lag(CIE, default = CIE[1]))
+bajas_2$cambio[1] <- 0
+bajas_2$cambio[bajas_2$cambio != 0] <- 1
+attach(bajas_2)
+```
+
+## Estimación con Superlearner
+
+```{r}
+library(SuperLearner)
+library(tmle)
+```
+
+Obtenemos descriptiva de variables del fichero.
+
+```{r "Modelo 1"}
+table(READAPTADO)
+table(Companheiro)
+```
+
+
+Intentamos estimar un primer modelo
+
+```{r}
+SL.library <- c("SL.glm", "SL.step","SL.step.interaction","SL.glm.interactioin","SL.gam","SL.randomForest","SL.rpart","SL.loess","SL.caret","SL.bart", "SL.knn", "SL.knn20", "SL.knn40", "SL.knn60")
+modelo1 <- tmle(Y=READAPTADO,A=cambio,W=bajas_2[,8], id=Num_Unico)
+summary(modelo1)
+print(modelo1)
+```
+
+## Modelo 2
+Incluimos comandos adicionales de Van der Laan 
+```{r}
+SL.library.2 <- c("SL.glm", "SL.step","SL.step.interaction","SL.glm.interactioin","SL.gam","SL.randomForest","SL.rpart")
+
+#modelo2 <- tmle(Y=READAPTADO,A=cambio,W=bajas_2[,c(7,8,9,10,14,15)], id=Num_Unico,
+#                family="binomial",Q.SL.library = SL.library, g.SL.library = SL.library)
+modelo2 <- tmle(Y=bajas_2$READAPTADO,A=bajas_2$cambio,W=bajas_2[,c(7,8,9,10,14)], id=bajas_2$Num_Unico,
+                family="binomial")
+summary(modelo2)
+print(modelo2)
+```
+
+## Modelo 3
+Vamos a introducir el tipo de cambio de diagnóstico. Como tiene que ser dicotómica, creamos una nueva variable que recoge si ha tenido una baja por salud mental durante el seguimiento. 
+- nivel "1"=cualquier CIE salud mental.
+- nivel "0"=cualquier CIE distinto salud mental.
+```{r}
+bajas_4$smental[bajas_4$cambio_CIE==0|bajas_4$cambio_CIE==3] <- 0
+bajas_4$smental[bajas_4$cambio_CIE==1|bajas_4$cambio_CIE==2] <- 1
+
+modelo3 <- tmle(Y=bajas_4$READAPTADO,A=bajas_4$smental,W=bajas_4[,c(7,8,9,10)], id=bajas_4$Num_Unico,
+                family="binomial")
+summary(modelo3)
+print(modelo3)
+```
+
+## Modelo 4
+Incluimos algoritmos de SuperLearner
+```{r}
+SL.library.2 <- c("SL.glm", "SL.step","SL.step.interaction","SL.glm.interactioin","SL.gam","SL.randomForest","SL.rpart")
+modelo4 <- tmle(Y=bajas_4$READAPTADO,A=bajas_4$smental,W=bajas_4[,c(7,8,9,10)], id=bajas_4$Num_Unico,
+                family="binomial", g.SL.library = SL.library.2)
+summary(modelo3)
+print(modelo3)
+```
+

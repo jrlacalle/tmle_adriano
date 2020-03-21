@@ -1,0 +1,112 @@
+---
+title: "Modelo_inicial"
+author: "Juan Ramon Lacalle"
+date: "14/12/2018"
+output:
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readxl)
+library(dplyr)
+library(tidyverse)
+```
+
+## Preparación de datos
+Incluimos el archivo original con los datos de trabajadores.  
+
+```{r}
+bajas <- read_excel("Base_TMLE_transposta.xlsx", 
+col_types = c("text", "numeric", "numeric", "skip", "numeric", "numeric", "numeric", "text", "numeric", "numeric", "numeric", "text", "numeric", "numeric", "numeric"))
+bajas$Sexo <- as.factor(bajas$Sexo)
+```
+
+Y creamos una variable, **cambio**, que compara el código CIE de la baja, e indica si ha cambiado (1) con respecto a la visita anterior, o no (0).  
+
+```{r}
+bajas_2 <- bajas %>% 
+  group_by(Num_Unico) %>% 
+  mutate(cambio = CIE - lag(CIE, default = CIE[1]))
+bajas_2$cambio[1] <- 0
+bajas_2$cambio[bajas_2$cambio != 0] <- 1
+```
+
+A partir de ese fichero, definimos una nueva variable para codificar los cambios que se producen entre visitas.Es decir, si los cambios de la CIE pasan de una categoría a otra, según el siguiente esquema:  
+
+- 1: Cualquier código (excepto 5) -> Código 5.  
+- 2: Código 5 -> Cualquier código (excepto 5).  
+- 3: Cualquier código (excepto 5) -> Cualquier código (excepto 5).  
+
+```{r}
+bajas$g_CIE <- recode(bajas$CIE, `5`=1, .default = 0)
+bajas_4 <- bajas %>% 
+  group_by(Num_Unico) %>% 
+    mutate(cambio_CIE = g_CIE - lag(g_CIE, default = g_CIE[1]))
+bajas_4$cambio_CIE[bajas_4$cambio_CIE == 0] <- 0
+bajas_4$cambio_CIE[bajas_4$cambio_CIE == -1] <- 2
+bajas_4$cambio_CIE[bajas_4$cambio_CIE == 0 & bajas_4$g_CIE == 0] <- 3
+bajas_4$smental <- 0
+bajas_4$smental[bajas_4$cambio_CIE==0|bajas_4$cambio_CIE==3] <- 0
+bajas_4$smental[bajas_4$cambio_CIE==1|bajas_4$cambio_CIE==2] <- 1
+```
+
+## Estimación modelo 1
+
+```{r , include=FALSE}
+library(SuperLearner)
+library(tmle)
+```
+
+En el modelo inicial, usamos los algoritmos por defecto de Superlearner incluidos en tmle.  
+
+```{r}
+modelo1 <- tmle(Y=bajas_2$READAPTADO,
+                A=bajas_2$cambio,
+                W=bajas_2[,c(7,8,9,10,14)],
+                id=bajas_2$Num_Unico,family="binomial")
+prueba <- bajas_2[1:500,]
+modelo1 <- tmle(Y=prueba$READAPTADO,
+                A=prueba$cambio,
+                W=prueba[,c(7,8,9,10,14)],
+                id=prueba$Num_Unico,family="binomial")
+summary(modelo1)
+print(modelo2)
+```
+
+## Estimación modelo 2
+Vamos a introducir el tipo de cambio de diagnóstico. Como tiene que ser dicotómica, creamos una nueva variable que recoge si ha tenido una baja por salud mental durante el seguimiento.  
+
+- nivel "1"=cualquier CIE salud mental.  
+- nivel "0"=cualquier CIE distinto salud mental.  
+
+```{r}
+modelo2 <- tmle(Y=bajas_4$READAPTADO,
+                A=bajas_4$smental,
+                W=bajas_4[,c(7,8,9,10)],
+                id=bajas_4$Num_Unico,
+                family="binomial")
+summary(modelo2)
+#print(modelo)
+```
+
+## Modelo 3
+En este modelo incluimos varios algoritmos de SuperLearner.  
+
+```{r}
+SL.library.2 <- c("SL.glm", "SL.step","SL.step.interaction","SL.glm.interaction","SL.gam","SL.randomForest","SL.rpart")
+modelo3 <- tmle(Y=bajas_4$READAPTADO,A=bajas_4$smental,W=bajas_4[,c(7,8,9,10)], id=bajas_4$Num_Unico,
+                family="binomial", g.SL.library = SL.library.2)
+summary(modelo3)
+# print(modelo3)
+```
+
+## Parameter estimates
+
+```{r}
+modelo3
+modelo3$Qinit$coef
+
+```
+

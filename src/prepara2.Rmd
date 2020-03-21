@@ -1,0 +1,87 @@
+---
+title: "Recuento de cambios de códigos CIE"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(dplyr)
+library(openxlsx)
+```
+
+En este fichero resumiremos los cambios que se producen en los códigos CIE en las sucesivas visitas de los trabajadores.
+En primer lugar, leemos los datos. Importo los datos del fichero de Adriano.
+```{r}
+bajas <- read_excel("Base_TMLE_transposta.xlsx", 
+col_types = c("text", "numeric", "numeric", "skip", "numeric", "numeric", "numeric", "text", "numeric", "numeric", "numeric", "text", "numeric", "numeric", "numeric"))
+```
+
+Ahora creo una variable que, comparando el código CIE de la baja, indica si ha cambiado con respecto a la visita anterior.
+
+```{r}
+bajas_2 <- bajas %>% 
+  group_by(Num_Unico) %>% 
+  mutate(cambio = CIE - lag(CIE, default = CIE[1]))
+bajas_2$cambio[1] <- 0
+bajas_2$cambio[bajas_2$cambio != 0] <- 1
+```
+
+Y ahora colapsamos el fichero para que cuente el número de cambios:
+```{r}
+bajas_3 <- bajas_2 %>% 
+  group_by(Num_Unico) %>% 
+  mutate(visitas_1=(Qde_Pericias-1)) %>% 
+  summarise(
+    n_cambios=sum(cambio),
+    visitas_1=n()-1
+  ) %>% 
+    mutate(prop_cambios = n_cambios/visitas_1)
+```
+
+Finalmente, incorporamos la variable de readaptacion
+```{r}
+ bajas_3 <- bajas_3 %>% 
+  left_join(bajas_2, by="Num_Unico") %>% 
+  filter(baja==1) %>% 
+  select(Num_Unico, n_cambios, visitas_1, prop_cambios, READAPTADO)
+```
+
+3. Tipo de cambios
+Creamos una variable que codifica si los cambios de la CIE pasan de una categoría a otra, según el siguiente esquema:
+- 1: Cualquier código (excepto 5) -> Código 5.
+- 2: Código 5 -> Cualquier código (excepto 5).
+- 3: Cualquier código (excepto 5) -> Cualquier código (excepto 5).
+
+```{r}
+bajas$g_CIE <- recode(bajas$CIE, `5`=1, .default = 0)
+bajas_4 <- bajas %>% 
+  group_by(Num_Unico) %>% 
+    mutate(cambio_CIE = g_CIE - lag(g_CIE, default = g_CIE[1]))
+bajas_4$cambio_CIE[bajas_4$cambio_CIE == 0] <- 0
+bajas_4$cambio_CIE[bajas_4$cambio_CIE == -1] <- 2
+bajas_4$cambio_CIE[bajas_4$cambio_CIE == 0 & bajas_4$g_CIE == 0] <- 3
+```
+
+Resumimos los cambios de CIE en las visitas según el siguiente código:
+- 0: Sin ningún cambio a Salud Mental.
+- 1: Todas las visitas son de Salud Mental.
+- 2: Resto.
+```{r}
+bajas_5 <- bajas_4 %>%
+  group_by(Num_Unico) %>% 
+  summarise(
+    no_sm=sum(g_CIE!=1),
+    si_sm=sum(g_CIE==1),
+    n_visitas=n()
+    ) %>% 
+  mutate(cambio_sm=ifelse(no_sm==n_visitas,0, 
+    ifelse(si_sm==n_visitas,1,
+      2))) %>% 
+  select(Num_Unico, cambio_sm)
+bajas_6 <- bajas_2 %>%
+ left_join(bajas_5, by="Num_Unico") %>% 
+  filter(baja==1) %>% 
+    select(Num_Unico, Qde_Pericias, READAPTADO, Sexo, Companheiro, cambio_sm)
+  
+```
