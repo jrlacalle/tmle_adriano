@@ -1,0 +1,190 @@
+---
+title: "Aplicación de tlverse"
+output: html_notebook
+---
+
+```{r configura, echo=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(data.table)
+library(tidyverse)
+library(readxl)
+library(origami)
+library(SuperLearner)
+library(sl3)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+```
+
+En este documento, vamos a reproducir el análisis de los datos sobre incapacidad, pero a partir de las nuevas implementaciones en el paquete tlverse.  
+```{r leedatos}
+bajas <- read_excel("datos/Base_TMLE_transposta.xlsx", 
+    sheet = "Base TMLE transposta",
+col_types = c("text", "numeric", "numeric", "skip", "numeric", "numeric", "numeric", "text", "numeric", "numeric", "numeric", "text", "numeric", "numeric", "numeric"))
+names(bajas) <- tolower(names(bajas))
+bajas$sexo <- as.factor(bajas$sexo)
+```
+
+Vemos la estructura del fichero.  
+```{r}
+head(bajas) %>%
+  kable(digits = 4) %>%
+  kableExtra:::kable_styling(fixed_thead = T) %>%
+  scroll_box(width = "100%", height = "300px")
+```
+
+
+Definimos una nueva variable, para incluir al personal sanitario (código=1), frente al resto(código=0).
+```{r dummy}
+bajas$cargo_1<- 0
+bajas$cargo_1<-ifelse(bajas$cargo_estrat %in% c("SUPERIOR SAUDE","MEDIO SAUDE"), 1, 0)
+```
+
+La variable "unidade" la recodificamos en 4 dummy:
+- AG: Admon Gral
+
+```{r unidade}
+bajas$unidade_dummy <- factor(bajas$unidade)
+```
+
+A continuación, definimos una nueva variable que compara el código CIE de la baja, e indica si ha cambiado con respecto a la visita anterior.
+
+```{r bajas2, message=FALSE}
+bajas_2 <- bajas %>% 
+  group_by(num_unico) %>% 
+  mutate(cambio = cie - lag(cie, default = cie[1]))
+bajas_2$cambio[1] <- 0
+bajas_2$cambio[bajas_2$cambio != 0] <- 1
+attach(bajas_2)
+```
+
+Y ahora colapsamos el fichero para que cuente el número de cambios:
+```{r bajas3}
+bajas_3 <- bajas_2 %>% 
+  group_by(num_unico) %>% 
+  mutate(visitas_1=(qde_pericias-1)) %>% 
+  summarise(
+    n_cambios=sum(cambio),
+    visitas_1=n()-1
+  ) %>% 
+    mutate(prop_cambios = n_cambios/visitas_1)
+```
+
+Finalmente, incorporamos la variable de readaptacion
+```{r}
+ bajas_3 <- bajas_3 %>% 
+  left_join(bajas_2, by="num_unico") %>% 
+  filter(baja==1) %>% 
+  select(num_unico, n_cambios, visitas_1, prop_cambios, readaptado)
+```
+
+# Tipo de cambios
+Creamos una variable que codifica si los cambios de la CIE pasan de una categoría a otra, según el siguiente esquema:
+- 1: Cualquier código (excepto 5) -> Código 5.
+- 2: Código 5 -> Cualquier código (excepto 5).
+- 3: Cualquier código (excepto 5) -> Cualquier código (excepto 5).
+
+```{r bajas4}
+bajas$g_cie <- recode(bajas$cie, `5`=1, .default = 0)
+bajas_4 <- bajas %>% 
+  group_by(num_unico) %>% 
+    mutate(cambio_cie = g_cie - lag(g_cie, default = g_cie[1]))
+bajas_4$cambio_cie[bajas_4$cambio_cie == 0] <- 0
+bajas_4$cambio_cie[bajas_4$cambio_cie == -1] <- 2
+bajas_4$cambio_cie[bajas_4$cambio_cie == 0 & bajas_4$g_cie == 0] <- 3
+```
+
+Resumimos los cambios de CIE en las visitas según el siguiente código:
+- 0: Sin ningún cambio a Salud Mental.
+- 1: Todas las visitas son de Salud Mental.
+- 2: Resto.  
+
+```{r bajas5}
+bajas_5 <- bajas_4 %>%
+  group_by(num_unico) %>% 
+  summarise(
+    no_sm=sum(g_cie!=1),
+    si_sm=sum(g_cie==1),
+    n_visitas=n()
+    ) %>% 
+  mutate(cambio_sm=ifelse(no_sm==n_visitas,0, 
+    ifelse(si_sm==n_visitas,1,2))) %>% 
+  select(num_unico, cambio_sm)
+bajas_6 <- bajas_2 %>%
+ left_join(bajas_5, by="num_unico") %>% 
+  filter(baja==1) %>% 
+    select(num_unico, qde_pericias, readaptado, sexo, companheiro, cambio_sm)
+  
+```
+
+# Super Learner
+## Definición de la tarea de supelearner
+
+```{r}
+# Selección de outcome y covariables
+resultado <- "readaptado"
+covariables <- colnames(bajas_4)[c(7,8,9,10,14)]
+
+# Definir la tarea superlearner
+bajas_4_tarea <- make_sl3_Task(
+  data = bajas_4,
+  covariates = covariables,
+  outcome = resultado
+)
+
+bajas_4_tarea
+```
+
+## Desarrollo del superlearner
+```{r}
+sl3_list_learners("binomial")
+```
+Esta lista recoge los métodos de superlearner disponibles para una variable categórica dicotómica. Y definimos primero los learners básicos:  
+
+```{r}
+lrnr_glm <- make_learner(Lrnr_glm)
+lrnr_mean <- make_learner(Lrnr_mean)
+```
+
+```{r}
+pila <- make_learner(
+  Stack,
+  lrnr_glm, lrnr_mean
+)
+```
+
+```{r}
+pilas_ajuste <- pila$train(bajas_4_tarea)
+pilas_ajuste
+```
+
+```{r}
+# we did it! now we have super learner predictions
+bajas4_preds <- pilas_ajuste$predict()
+
+```
+
+## Validación cruzada
+El siguiente paso consiste en la validación cruzada del SuperLearner para ver cómo se ajusta en un conjunto de datos no analizados previamente.  
+Este procedimiento de estimación requiere que tengamos una capa *externa* de validación cruzada, conocida como validación anidada. En ella, usamos una muestra distinta a la usada para ajustar el Super Learner. Este procedimiento puedo incorporar 10 repeticiones, que es la que aparece por defecto en `sl3`. Sin embargo, incorporaremos 2 conjuntos externos de validación para que el cómputo sea más eficiente.  
+Además, tenemos que especificar una función de pérdida o *loss* para evaluar el Super Learner.  
+
+```{r}
+bajas4_tarea_nuevo <- make_sl3_Task(
+  data = bajas_4,
+  covariates = covariables,
+  outcome = resultado,
+  folds = origami::make_folds(bajas_4, fold_fun = folds_vfold, V = 2)
+)
+```
+
+```{r}
+CVsl <- CV_lrnr_sl(pilas_ajuste, bajas4_tarea_nuevo, loss_squared_error)
+CVsl %>%
+  kable(digits = 4) %>%
+  kableExtra:::kable_styling(fixed_thead = T) %>%
+  scroll_box(width = "100%", height = "300px")
+```
+
+# TMLE
+

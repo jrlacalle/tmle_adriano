@@ -100,4 +100,3 @@ modelo4 <- tmle(Y=bajas_4$READAPTADO,A=bajas_4$smental,W=bajas_4[,c(7,8,9,10)], 
 summary(modelo3)
 print(modelo3)
 ```
-
