@@ -18,7 +18,7 @@ library(kableExtra)
 
 En este documento, vamos a reproducir el análisis de los datos sobre incapacidad, pero a partir de las nuevas implementaciones en el paquete tlverse.  
 ```{r leedatos}
-bajas <- read_excel("datos/Base_TMLE_transposta.xlsx", 
+bajas <- read_excel("~/tmle_adriano/datos/Base_TMLE_transposta.xlsx", 
     sheet = "Base TMLE transposta",
 col_types = c("text", "numeric", "numeric", "skip", "numeric", "numeric", "numeric", "text", "numeric", "numeric", "numeric", "text", "numeric", "numeric", "numeric"))
 names(bajas) <- tolower(names(bajas))
