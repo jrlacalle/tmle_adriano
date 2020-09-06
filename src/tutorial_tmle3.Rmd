@@ -1,0 +1,132 @@
+---
+title: "prueba TMLE3"
+output: html_notebook
+---
+Fichero de prueba con las instrucciones del manual de TMLE3 (https://tlverse.org/tlverse-handbook/sl3.html)  
+
+## Primeros pasos y carga de los datos
+
+```{r setup}
+library(here)
+library(data.table)
+library(tidyverse)
+library(tmle3)
+library(sl3)
+washb_data <- fread("https://raw.githubusercontent.com/tlverse/tlverse-data/master/wash-benefits/washb_data.csv", stringsAsFactors = TRUE)
+```
+
+## Definir las variables
+Indicamos a `tmle3` cuáles son las covariables (W), el tratamiento (A) y el outcome (Y):  
+```{r nodelist}
+node_list <- list(
+  W = c(
+    "month", "aged", "sex", "momage", "momedu",
+    "momheight", "hfiacat", "Nlt18", "Ncomp", "watmin",
+    "elec", "floor", "walls", "roof", "asset_wardrobe",
+    "asset_table", "asset_chair", "asset_khat",
+    "asset_chouki", "asset_tv", "asset_refrig",
+    "asset_bike", "asset_moto", "asset_sewmach",
+    "asset_mobile"
+  ),
+  A = "tr",
+  Y = "whz"
+)
+```
+
+## Procesamiento valores perdidos
+En `tmle2` dispone de una función que imputa la mediana (v. continuas) o la moda (v. cualitativas) a los valores perdidos de las covariables.
+```{r missing}
+processed <- process_missing(washb_data, node_list)
+washb_data <- processed$data
+node_list <- processed$node_list
+```
+
+## Definición del objeto con especificaciones
+
+```{r especificacion1}
+ate_spec <- tmle_ATE(
+  treatment_level = "Nutrition + WSH",
+  control_level = "Control"
+)
+```
+
+## Definir los learners
+
+```{r}
+# choose base learners
+lrnr_mean <- make_learner(Lrnr_mean)
+lrnr_xgboost <- make_learner(Lrnr_xgboost)
+
+# define metalearners appropriate to data types
+ls_metalearner <- make_learner(Lrnr_nnls)
+mn_metalearner <- make_learner(Lrnr_solnp, metalearner_linear_multinomial,
+                               loss_loglik_multinomial)
+sl_Y <- Lrnr_sl$new(learners = list(lrnr_mean, lrnr_xgboost),
+                    metalearner = ls_metalearner)
+sl_A <- Lrnr_sl$new(learners = list(lrnr_mean, lrnr_xgboost),
+                    metalearner = mn_metalearner)
+learner_list <- list(A = sl_A, Y = sl_Y)
+```
+
+## Ajuste del modelo TMLE
+```{r ajuste}
+tmle_fit <- tmle3(ate_spec, washb_data, node_list, learner_list)
+print(tmle_fit)
+```
+
+## Obtención de las estimaciones
+
+```{r estimaciones}
+estimates <- tmle_fit$summary$psi_transformed
+print(estimates)
+```
+
+## Componentes del TMLE
+
+```{r}
+tmle_task <- ate_spec$make_tmle_task(washb_data, node_list)
+tmle_task$npsem
+```
+
+## Estimación de la verosimilitud inicial
+
+```{r}
+initial_likelihood <- ate_spec$make_initial_likelihood(
+  tmle_task,
+  learner_list
+)
+print(initial_likelihood)
+```
+Ahora, combinando con los resultados de `tmle_task` podemos obtener las estimaciones individuales de la verosimilitud para cada observación.  
+```{r}
+initial_likelihood$get_likelihoods(tmle_task)
+```
+
+## Actualización del estimador diana
+
+```{r}
+targeted_likelihood <- Targeted_Likelihood$new(initial_likelihood)
+```
+
+```{r}
+targeted_likelihood_no_cv <-
+  Targeted_Likelihood$new(initial_likelihood,
+    updater = list(cvtmle = FALSE)
+  )
+```
+
+## Mapa de parámetros
+```{r}
+tmle_params <- ate_spec$make_params(tmle_task, targeted_likelihood)
+print(tmle_params)
+```
+
+## Resultado final
+```{r}
+tmle_fit_manual <- fit_tmle3(
+  tmle_task, targeted_likelihood, tmle_params,
+  targeted_likelihood$updater
+)
+print(tmle_fit_manual)
+```
+
