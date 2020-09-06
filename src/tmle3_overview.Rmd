@@ -1,0 +1,67 @@
+---
+title: "Tutorial tmle3"
+output: html_notebook
+---
+Las instrucciones que aparecen en este documento reproducen el ejemplo presentado en el tutorial de `tmle3, disponible en el siguiente [https://tlverse.org/tmle3/articles/framework.html](enlace).  
+
+```{r setup}
+library(tmle3)
+library(sl3)
+data(cpp)
+cpp <- cpp[!is.na(cpp[, "haz"]), ]
+cpp$parity01 <- as.numeric(cpp$parity > 0)
+cpp[is.na(cpp)] <- 0
+cpp$haz01 <- as.numeric(cpp$haz > 0)
+```
+
+
+```{r define modelo}
+npsem <- list(
+  define_node("W", c(
+    "apgar1", "apgar5", "gagebrth", "mage",
+    "meducyrs", "sexn"
+  )),
+  define_node("A", c("parity01"), c("W")),
+  define_node("Y", c("haz01"), c("A", "W"))
+)
+```
+
+
+```{r tml3 task}
+tmle_task <- tmle3_Task$new(cpp, npsem = npsem)
+```
+
+```{r tml3 salida}
+# get the outcome node data
+head(tmle_task$get_tmle_node("Y"))
+```
+
+```{r tml3 regresion}
+# get the sl3 task corresponding to an outcome regression
+tmle_task$get_regression_task("Y")
+```
+
+```{r superlearners}
+# set up sl3 learners for tmle3 fit
+lrnr_glm_fast <- make_learner(Lrnr_glm_fast)
+lrnr_mean <- make_learner(Lrnr_mean)
+
+# define and fit likelihood
+factor_list <- list(
+  define_lf(LF_emp, "W"),
+  define_lf(LF_fit, "A", lrnr_glm_fast),
+  define_lf(LF_fit, "Y", lrnr_glm_fast, type="mean")
+)
+```
+
+```{r verosimilitud}
+likelihood_def <- Likelihood$new(factor_list)
+likelihood <- likelihood_def$train(tmle_task)
+print(likelihood)
+```
+
+```{r valores verosimilitud}
+likelihood_values <- likelihood$get_likelihoods(tmle_task,"Y")
+head(likelihood_values)
+```
+
