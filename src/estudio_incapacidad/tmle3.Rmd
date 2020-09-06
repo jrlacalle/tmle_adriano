@@ -1,0 +1,116 @@
+---
+title: "Modelo_ version 3"
+author: "Juan Ramon Lacalle"
+date: "20/jul/2020"
+output:
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readxl)
+library(dplyr)
+library(tidyverse)
+library(skimr)
+library(here)
+library(data.table)
+library(tmle3)
+library(sl3)
+```
+
+## Preparación de datos
+Incluimos el archivo original con los datos de trabajadores.  
+
+```{r}
+bajas <- read_excel("~/tmle_adriano/datos/Base_TMLE_transposta.xlsx", 
+col_types = c("text", "numeric", "numeric", "skip", "numeric", "numeric", "numeric", "text", "numeric", "numeric", "numeric", "text", "numeric", "numeric", "numeric"))
+bajas$Sexo <- as.factor(bajas$Sexo)
+bajas$READAPTADO <- as.factor(bajas$READAPTADO)
+bajas <- as.data.frame(bajas)
+```
+
+Y creamos una variable, **cambio**, que compara el código CIE de la baja, e indica si ha cambiado (1) con respecto a la visita anterior, o no (0).  
+
+```{r}
+bajas_2 <- bajas %>% 
+  group_by(Num_Unico) %>% 
+  mutate(cambio = CIE - lag(CIE, default = CIE[1]))
+bajas_2$cambio[1] <- 0
+bajas_2$cambio[bajas_2$cambio != 0] <- 1
+```
+
+A partir de ese fichero, definimos una nueva variable para codificar los cambios que se producen entre visitas.Es decir, si los cambios de la CIE pasan de una categoría a otra, según el siguiente esquema:  
+
+- 1: Cualquier código (excepto 5) -> Código 5.  
+- 2: Código 5 -> Cualquier código (excepto 5).  
+- 3: Cualquier código (excepto 5) -> Cualquier código (excepto 5).  
+
+```{r}
+bajas$g_CIE <- recode(bajas$CIE, `5`=1, .default = 0)
+bajas_4 <- bajas %>% 
+  group_by(Num_Unico) %>% 
+    mutate(cambio_CIE = g_CIE - lag(g_CIE, default = g_CIE[1]))
+bajas_4$cambio_CIE[bajas_4$cambio_CIE == 0] <- 0
+bajas_4$cambio_CIE[bajas_4$cambio_CIE == -1] <- 2
+bajas_4$cambio_CIE[bajas_4$cambio_CIE == 0 & bajas_4$g_CIE == 0] <- 3
+bajas_4$smental <- 0
+bajas_4$smental[bajas_4$cambio_CIE==0|bajas_4$cambio_CIE==3] <- 0
+bajas_4$smental[bajas_4$cambio_CIE==1|bajas_4$cambio_CIE==2] <- 1
+```
+
+## Estimación modelo 1
+
+Definimos los componentes del modelo:  
+- W: covariables.  
+- A: tratamiento.  
+- Y: outcome.  
+
+```{r nodos}
+node_list <- list(
+  W = c("Sexo","Companheiro","tempotrabalho","tempo_TOTAL","tiempo"),
+  A = "cambio",
+  Y = "READAPTADO")
+```
+## Procesamiento valores perdidos
+En `tmle2` dispone de una función que imputa la mediana (v. continuas) o la moda (v. cualitativas) a los valores perdidos de las covariables.
+```{r missing}
+processed <- process_missing(bajas_2, node_list)
+bajas_2_data <- processed$data
+node_list <- processed$node_list
+```
+
+## Definición del objeto con especificaciones
+
+```{r especificacion1}
+ate_spec <- tmle_ATE(
+  treatment_level = "1",
+  control_level = "0"
+)
+```
+
+
+## Definir los learners
+
+```{r}
+# choose base learners
+lrnr_mean <- make_learner(Lrnr_mean)
+lrnr_xgboost <- make_learner(Lrnr_xgboost)
+
+# define metalearners appropriate to data types
+ls_metalearner <- make_learner(Lrnr_nnls)
+mn_metalearner <- make_learner(Lrnr_solnp, metalearner_linear_multinomial,
+                               loss_loglik_multinomial)
+sl_Y <- Lrnr_sl$new(learners = list(lrnr_mean, lrnr_xgboost),
+                    metalearner = ls_metalearner)
+sl_A <- Lrnr_sl$new(learners = list(lrnr_mean, lrnr_xgboost),
+                    metalearner = mn_metalearner)
+learner_list <- list(A = sl_A, Y = sl_Y)
+```
+
+## Ajuste del modelo TMLE
+```{r ajuste}
+tmle_fit <- tmle3(ate_spec, bajas_2_data, node_list, learner_list)
+print(tmle_fit)
+```
+
