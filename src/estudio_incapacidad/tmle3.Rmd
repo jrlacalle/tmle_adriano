@@ -7,6 +7,15 @@ output:
   word_document: default
 ---
 
+```{r}
+install.packages("devtools")
+devtools::install_github("tlverse/tlverse")
+devtools::install_github("tlverse/tmle3")
+devtools::install_github("tlverse/nnls")
+
+```
+
+
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library(readxl)
@@ -91,6 +100,10 @@ ate_spec <- tmle_ATE(
 
 
 ## Definir los learners
+```{r}
+sl3_list_learners("binomial")
+```
+
 
 ```{r}
 # choose base learners
@@ -98,11 +111,11 @@ lrnr_mean <- make_learner(Lrnr_mean)
 lrnr_xgboost <- make_learner(Lrnr_xgboost)
 
 # define metalearners appropriate to data types
-ls_metalearner <- make_learner(Lrnr_nnls)
+#ls_metalearner <- make_learner(Lrnr_nnls)
 mn_metalearner <- make_learner(Lrnr_solnp, metalearner_linear_multinomial,
                                loss_loglik_multinomial)
 sl_Y <- Lrnr_sl$new(learners = list(lrnr_mean, lrnr_xgboost),
-                    metalearner = ls_metalearner)
+                    metalearner = mn_metalearner)
 sl_A <- Lrnr_sl$new(learners = list(lrnr_mean, lrnr_xgboost),
                     metalearner = mn_metalearner)
 learner_list <- list(A = sl_A, Y = sl_Y)
