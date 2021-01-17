@@ -1,6 +1,9 @@
 ---
 title: "Aplicación de tlverse"
-output: html_notebook
+output:
+  word_document: default
+  pdf_document: default
+  html_notebook: default
 ---
 
 ```{r configura, echo=FALSE, message=FALSE}
@@ -14,6 +17,8 @@ library(sl3)
 library(ggplot2)
 library(knitr)
 library(kableExtra)
+library(tidyverse)
+library(tmle3)
 ```
 
 En este documento, vamos a reproducir el análisis de los datos sobre incapacidad, pero a partir de las nuevas implementaciones en el paquete tlverse.  
@@ -34,7 +39,8 @@ head(bajas) %>%
 ```
 
 
-Definimos una nueva variable, para incluir al personal sanitario (código=1), frente al resto(código=0).
+Definimos una nueva variable, para incluir al personal sanitario (código=1), frente al resto(código=0).  
+
 ```{r dummy}
 bajas$cargo_1<- 0
 bajas$cargo_1<-ifelse(bajas$cargo_estrat %in% c("SUPERIOR SAUDE","MEDIO SAUDE"), 1, 0)
@@ -58,7 +64,7 @@ bajas_2$cambio[bajas_2$cambio != 0] <- 1
 attach(bajas_2)
 ```
 
-Y ahora colapsamos el fichero para que cuente el número de cambios:
+Y ahora colapsamos el fichero para que cuente el número de cambios:  
 ```{r bajas3}
 bajas_3 <- bajas_2 %>% 
   group_by(num_unico) %>% 
@@ -70,7 +76,8 @@ bajas_3 <- bajas_2 %>%
     mutate(prop_cambios = n_cambios/visitas_1)
 ```
 
-Finalmente, incorporamos la variable de readaptacion
+Finalmente, incorporamos la variable de readaptacion  
+
 ```{r}
  bajas_3 <- bajas_3 %>% 
   left_join(bajas_2, by="num_unico") %>% 
@@ -79,7 +86,8 @@ Finalmente, incorporamos la variable de readaptacion
 ```
 
 # Tipo de cambios
-Creamos una variable que codifica si los cambios de la CIE pasan de una categoría a otra, según el siguiente esquema:
+Creamos una variable que codifica si los cambios de la CIE pasan de una categoría a otra, según el siguiente esquema:  
+
 - 1: Cualquier código (excepto 5) -> Código 5.
 - 2: Código 5 -> Cualquier código (excepto 5).
 - 3: Cualquier código (excepto 5) -> Cualquier código (excepto 5).
@@ -187,4 +195,21 @@ CVsl %>%
 ```
 
 # TMLE
+## Definir las variables
+Indicamos a `tmle3` cuáles son las covariables (W), el tratamiento (A) y el outcome (Y):  
+```{r nodelist}
+node_list <- list(
+  W = c(
+    "month", "aged", "sex", "momage", "momedu",
+    "momheight", "hfiacat", "Nlt18", "Ncomp", "watmin",
+    "elec", "floor", "walls", "roof", "asset_wardrobe",
+    "asset_table", "asset_chair", "asset_khat",
+    "asset_chouki", "asset_tv", "asset_refrig",
+    "asset_bike", "asset_moto", "asset_sewmach",
+    "asset_mobile"
+  ),
+  A = "tr",
+  Y = "whz"
+)
+```
 
